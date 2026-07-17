@@ -123,18 +123,7 @@ CONTEXT_MENU_REGION_PAD_X = 40
 CONTEXT_MENU_REGION_PAD_Y = 10
 CONTEXT_MENU_REGION_WIDTH = 260
 CONTEXT_MENU_REGION_HEIGHT = 220
-RESIZE_FACTOR = 2.5
-
-# Absolute target size for the Monitor dialog, in pixels.
-# = the dialog's DEFAULT/initial open size x RESIZE_FACTOR.
-# Measure this ONCE: open a fresh Monitor dialog manually (before any
-# resizing), note its width/height (e.g. via `pygetwindow`'s
-# win.width / win.height, or just measure on screen), multiply by 2.5,
-# and put the result here. All dialogs will then be resized (or left
-# alone) to match this exact absolute size, regardless of where they
-# happen to open.
-TARGET_DIALOG_WIDTH = 800    # <-- fill in: default_width * 2.5
-TARGET_DIALOG_HEIGHT = 600   # <-- fill in: default_height * 2.5
+RESIZE_FACTOR = 1.8  # Monitor dialog target = current size * this factor
 
 SIZE_TOLERANCE_PX = 10  # if within this many px of target, skip resizing
 POLL_INTERVAL_SECS = 8          # step 12 "waiting" before re-checking log
@@ -466,37 +455,60 @@ def click_monitor_menu_item() -> bool:
 
 
 # ------------------------------------------------------------------
-# STEP 6-7: move to bottom-right corner of dialog, resize 2.5x
+# STEP 6-7: resize Monitor dialog via Windows API (pygetwindow)
 # ------------------------------------------------------------------
 
-def get_active_monitor_window():
-    """Return the pygetwindow Window object for the newly-opened Monitor dialog."""
-    time.sleep(0.5)
+def get_monitor_window():
+    """
+    Return the Monitor dialog window.
+    Prefer a title containing 'Monitor'; fall back to the active window.
+    """
+    time.sleep(0.8)  # let the dialog finish opening
+    candidates = []
+    for win in gw.getAllWindows():
+        title = (win.title or "").strip()
+        if not title:
+            continue
+        if "monitor" in title.lower():
+            candidates.append(win)
+
+    if candidates:
+        # Prefer the most recently focused / largest candidate
+        win = max(candidates, key=lambda w: (w.width * w.height))
+        log.info(f"Found Monitor window by title: '{win.title}' ({win.width}x{win.height})")
+        return win
+
     win = gw.getActiveWindow()
+    if win is not None:
+        log.info(
+            f"No title match for Monitor; using active window: "
+            f"'{win.title}' ({win.width}x{win.height})"
+        )
     return win
 
 
 def resize_monitor_dialog() -> bool:
     """
-    Resize the Monitor dialog to the fixed absolute size
-    (TARGET_DIALOG_WIDTH x TARGET_DIALOG_HEIGHT), which represents
-    2.5x the dialog's default/initial size.
-
-    If the dialog is already at (or within SIZE_TOLERANCE_PX of) that
-    size -- e.g. it was left resized from a previous run -- skip the
-    drag entirely.
+    Resize the Monitor dialog to RESIZE_FACTOR x its current width/height
+    using pygetwindow.resizeTo (Windows API), then verify the result.
     """
-    win = get_active_monitor_window()
+    win = get_monitor_window()
     if win is None:
-        log.warning("No active window found for Monitor dialog")
+        log.warning("No Monitor window found for resize")
         return False
 
-    orig_left, orig_top = win.left, win.top
+    try:
+        win.activate()
+    except Exception as e:
+        log.warning(f"Could not activate Monitor window: {e}")
+
+    time.sleep(0.2)
     orig_width, orig_height = win.width, win.height
+    target_width = int(round(orig_width * RESIZE_FACTOR))
+    target_height = int(round(orig_height * RESIZE_FACTOR))
 
-    width_diff = abs(orig_width - TARGET_DIALOG_WIDTH)
-    height_diff = abs(orig_height - TARGET_DIALOG_HEIGHT)
-
+    width_diff = abs(orig_width - target_width)
+    height_diff = abs(orig_height - target_height)
     if width_diff <= SIZE_TOLERANCE_PX and height_diff <= SIZE_TOLERANCE_PX:
         log.info(
             f"Dialog already at target size ({orig_width}x{orig_height}), "
@@ -504,23 +516,30 @@ def resize_monitor_dialog() -> bool:
         )
         return True
 
-    # Step 6: move mouse to bottom-right corner (the resize handle)
-    corner_x = orig_left + orig_width - 2
-    corner_y = orig_top + orig_height - 2
-    pyautogui.moveTo(corner_x, corner_y, duration=0.3)
-
-    # Step 7: drag out to the fixed absolute target size
-    target_x = orig_left + TARGET_DIALOG_WIDTH
-    target_y = orig_top + TARGET_DIALOG_HEIGHT
-
-    pyautogui.mouseDown()
-    pyautogui.moveTo(target_x, target_y, duration=0.6)
-    pyautogui.mouseUp()
-
     log.info(
-        f"Resized Monitor dialog from {orig_width}x{orig_height} "
-        f"to {TARGET_DIALOG_WIDTH}x{TARGET_DIALOG_HEIGHT}"
+        f"Resizing Monitor dialog via API from {orig_width}x{orig_height} "
+        f"to {target_width}x{target_height} (x{RESIZE_FACTOR})"
     )
+    try:
+        win.resizeTo(target_width, target_height)
+    except Exception:
+        log.exception("win.resizeTo failed")
+        return False
+
+    time.sleep(0.3)
+    # Re-read size after the API call
+    new_width, new_height = win.width, win.height
+    if (
+        abs(new_width - target_width) > SIZE_TOLERANCE_PX
+        or abs(new_height - target_height) > SIZE_TOLERANCE_PX
+    ):
+        log.warning(
+            f"Resize verification failed: wanted {target_width}x{target_height}, "
+            f"got {new_width}x{new_height}"
+        )
+        return False
+
+    log.info(f"Resized Monitor dialog confirmed at {new_width}x{new_height}")
     return True
 
 
