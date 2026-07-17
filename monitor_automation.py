@@ -434,29 +434,33 @@ def find_and_right_click_ip(ip: str) -> tuple[bool, bool, str | None]:
 # ------------------------------------------------------------------
 
 def click_monitor_menu_item() -> bool:
-    region = context_menu_region(state.last_right_click)
-    log.info(
-        f"Searching for Monitor menu image near right-click "
-        f"{state.last_right_click}, region={region}"
-    )
-
-    # Prefer OCR for the exact word "Monitor" so we never hit Information.
-    location = find_monitor_menu_by_ocr(region)
-    if location is None:
-        log.info(f"OCR miss; falling back to image match: {MONITOR_MENU_IMAGE}")
-        location = locate_image_center(
-            MONITOR_MENU_IMAGE,
-            MONITOR_MENU_MATCH_CONFIDENCE,
-            "'Monitor' menu item",
-            region=region,
-        )
-
-    if location is None:
-        log.warning("Could not find 'Monitor' menu item on screen")
+    """
+    Select Monitor from the right-click menu via keyboard.
+    Menu order is fixed:
+      1. Tab Notify
+      2. Information
+      3. Monitor  <-- target
+      4. Run File
+      5. WebCam
+    """
+    if state.last_right_click is None:
+        log.warning("No right-click anchor; cannot open Monitor via keyboard")
         return False
 
-    pyautogui.click(location)
-    log.info(f"Clicked 'Monitor' menu item at {location}")
+    log.info(
+        "Selecting Monitor menu item with keyboard "
+        "(Down x3 + Enter) after right-click at "
+        f"{state.last_right_click}"
+    )
+    time.sleep(0.35)  # let the context menu fully appear and take focus
+    pyautogui.press("down")  # Tab Notify
+    time.sleep(0.08)
+    pyautogui.press("down")  # Information
+    time.sleep(0.08)
+    pyautogui.press("down")  # Monitor
+    time.sleep(0.08)
+    pyautogui.press("enter")
+    log.info("Sent Down x3 + Enter for Monitor menu item")
     time.sleep(1)  # let the dialog open
     return True
 
