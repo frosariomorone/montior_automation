@@ -10,7 +10,7 @@ Implements the 12-step loop you described:
  4. Find the row matching that IP, right-click it
  5. Click "Monitor" in the context menu
  6. Move mouse to the bottom-right resize corner of the new Monitor dialog
- 7. Drag-resize the dialog to 2.5x its original size
+ 7. Resize the dialog to 1.8x its original size (Windows API)
  8. Click the "Autosave" button
  9. A new File Explorer window opens (from autosave) -> close it, sleep 5s
 10. Minimize the Monitor dialog
@@ -544,21 +544,86 @@ def resize_monitor_dialog() -> bool:
 
 
 # ------------------------------------------------------------------
-# STEP 8: click Autosave
+# STEP 8: click Autosave (OCR inside Monitor window)
 # ------------------------------------------------------------------
 
+def _normalize_ocr_token(word: str) -> str:
+    return word.strip().strip("[](){}").strip().lower()
+
+
+def find_autosave_by_ocr(region) -> tuple[int, int] | None:
+    """
+    OCR the Monitor window region and return the center of the AutoSave text.
+    Accepts AutoSave / Auto-Save / Auto Save (split tokens).
+    """
+    if region is None:
+        return None
+
+    screenshot = pyautogui.screenshot(region=region)
+    data = pytesseract.image_to_data(screenshot, output_type=pytesseract.Output.DICT)
+    words = [word.strip() for word in data["text"] if word.strip()]
+    log.info(f"Monitor window OCR words: {_text_preview(' '.join(words))}")
+
+    # Single-token match: AutoSave, Auto-Save, [AutoSave], etc.
+    for i, word in enumerate(data["text"]):
+        cleaned = _normalize_ocr_token(word).replace("-", "").replace("_", "")
+        if cleaned == "autosave":
+            x = region[0] + data["left"][i] + data["width"][i] // 2
+            y = region[1] + data["top"][i] + data["height"][i] // 2
+            log.info(f"OCR found AutoSave text at ({x}, {y})")
+            return (x, y)
+
+    # Split-token match: "Auto" + "Save"
+    cleaned_words = []
+    for i, word in enumerate(data["text"]):
+        cleaned = _normalize_ocr_token(word)
+        if cleaned:
+            cleaned_words.append((i, cleaned))
+
+    for idx in range(len(cleaned_words) - 1):
+        i1, w1 = cleaned_words[idx]
+        i2, w2 = cleaned_words[idx + 1]
+        if w1 == "auto" and w2.replace("-", "") == "save":
+            x1 = region[0] + data["left"][i1] + data["width"][i1] // 2
+            y1 = region[1] + data["top"][i1] + data["height"][i1] // 2
+            x2 = region[0] + data["left"][i2] + data["width"][i2] // 2
+            y2 = region[1] + data["top"][i2] + data["height"][i2] // 2
+            x, y = (x1 + x2) // 2, (y1 + y2) // 2
+            log.info(f"OCR found Auto + Save text at ({x}, {y})")
+            return (x, y)
+
+    return None
+
+
 def click_autosave_button() -> bool:
-    log.info(f"Searching for Autosave button image: {AUTOSAVE_BUTTON_IMAGE}")
-    location = locate_image_center(
-        AUTOSAVE_BUTTON_IMAGE,
-        IMAGE_MATCH_CONFIDENCE,
-        "Autosave button",
-    )
-    if location is None:
-        log.warning("Could not find Autosave button on screen")
+    """Click AutoSave by OCR inside the Monitor dialog bounds."""
+    win = get_monitor_window()
+    if win is None:
+        log.warning("No Monitor window found for Autosave OCR")
         return False
+
+    left = max(0, win.left)
+    top = max(0, win.top)
+    width = max(1, win.width)
+    height = max(1, win.height)
+    # AutoSave is typically in the top toolbar — OCR the upper portion first
+    # for speed/accuracy, then fall back to the full window.
+    top_region = (left, top, width, max(80, height // 4))
+    full_region = (left, top, width, height)
+
+    log.info(f"Searching for AutoSave via OCR in Monitor top region: {top_region}")
+    location = find_autosave_by_ocr(top_region)
+    if location is None:
+        log.info(f"AutoSave not in top region; OCR full Monitor window: {full_region}")
+        location = find_autosave_by_ocr(full_region)
+
+    if location is None:
+        log.warning("Could not find AutoSave text in Monitor window")
+        return False
+
     pyautogui.click(location)
-    log.info("Clicked Autosave button")
+    log.info(f"Clicked AutoSave at {location}")
+    time.sleep(0.5)
     return True
 
 
