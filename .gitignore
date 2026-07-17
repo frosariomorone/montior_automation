@@ -1,0 +1,8 @@
+venv/
+build/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+activity.log
+activity.log.*
