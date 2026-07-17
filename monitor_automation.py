@@ -130,9 +130,14 @@ POLL_INTERVAL_SECS = 8          # step 12 "waiting" before re-checking log
 EXPLORER_CLOSE_WAIT_SECS = 8    # wait after Autosave before closing Explorer
 
 # Log line format example: "9:48:14 PM      192.168.1.23   Connected"
-# Allow OCR junk (quotes, pipes, etc.) between the time and the IP.
+# Timestamp is optional — OCR often drops it. Allow junk before the IP.
 LOG_LINE_PATTERN = re.compile(
-    r"(?P<time>\d{1,2}:\d{2}:\d{2}\s*[AP]M)\s*[^\d]*?"
+    r"(?:(?P<time>\d{1,2}:\d{2}:\d{2}\s*[AP]M)\s*)?"
+    r"[^\d]*?(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s*Connected",
+    re.IGNORECASE,
+)
+# Extra-loose fallback when the primary pattern misses (OCR noise).
+CONNECTED_IP_FALLBACK = re.compile(
     r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})\s*Connected",
     re.IGNORECASE,
 )
@@ -350,9 +355,34 @@ def read_new_connections() -> list:
     text = pytesseract.image_to_string(screenshot)
     log.info(f"OCR log text preview: {_text_preview(text)}")
 
+    # Detect when another window (cmd / notepad / explorer) is covering the log.
+    lowered = text.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "activity.log",
+            "contacts",
+            "downloads",
+            "favorites",
+            "dir>",
+            "internal or externe",
+            "monitoring automation loop",
+        )
+    ):
+        log.warning(
+            "Log OCR looks like another window is covering the monitoring app. "
+            "Bring the monitoring window to the front and keep it visible."
+        )
+
+    found_ips = []
+    for pattern in (LOG_LINE_PATTERN, CONNECTED_IP_FALLBACK):
+        for match in pattern.finditer(text):
+            ip = match.group("ip")
+            if ip not in found_ips:
+                found_ips.append(ip)
+
     new_ips = []
-    for match in LOG_LINE_PATTERN.finditer(text):
-        ip = match.group("ip")
+    for ip in found_ips:
         if ip in state.skipped_ips:
             log.info(f"Skipping permanently skipped IP: {ip}")
             continue
