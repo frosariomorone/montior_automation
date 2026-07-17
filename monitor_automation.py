@@ -117,7 +117,12 @@ MONITOR_MENU_IMAGE = os.path.join(ASSETS_DIR, "monitor_menu_item.png")
 AUTOSAVE_BUTTON_IMAGE = os.path.join(ASSETS_DIR, "autosave_button.png")
 
 IMAGE_MATCH_CONFIDENCE = 0.85   # lower this if matches keep failing (needs opencv)
-MONITOR_MENU_MATCH_CONFIDENCE = 0.55
+MONITOR_MENU_MATCH_CONFIDENCE = 0.75
+# Context menu search box around the right-click point.
+CONTEXT_MENU_REGION_PAD_X = 40
+CONTEXT_MENU_REGION_PAD_Y = 10
+CONTEXT_MENU_REGION_WIDTH = 260
+CONTEXT_MENU_REGION_HEIGHT = 220
 RESIZE_FACTOR = 2.5
 
 # Absolute target size for the Monitor dialog, in pixels.
@@ -178,13 +183,47 @@ def _text_preview(text: str, max_len: int = 160) -> str:
     return preview or "<empty>"
 
 
-def locate_image_center(image_path: str, confidence: float, label: str):
+def locate_image_center(image_path: str, confidence: float, label: str, region=None):
     try:
-        return pyautogui.locateCenterOnScreen(image_path, confidence=confidence)
+        return pyautogui.locateCenterOnScreen(
+            image_path, confidence=confidence, region=region
+        )
     except pyautogui.ImageNotFoundException as e:
         log.warning(f"Could not locate {label}: {e}")
     except Exception:
         log.exception(f"Unexpected error while locating {label}")
+    return None
+
+
+def context_menu_region(anchor: tuple[int, int] | None):
+    """Screen region where the right-click context menu should appear."""
+    if anchor is None:
+        return None
+    x, y = anchor
+    left = max(0, x - CONTEXT_MENU_REGION_PAD_X)
+    top = max(0, y - CONTEXT_MENU_REGION_PAD_Y)
+    return (left, top, CONTEXT_MENU_REGION_WIDTH, CONTEXT_MENU_REGION_HEIGHT)
+
+
+def find_monitor_menu_by_ocr(region) -> tuple[int, int] | None:
+    """
+    OCR the context-menu region and click the word Monitor,
+    never Information.
+    """
+    if region is None:
+        return None
+    screenshot = pyautogui.screenshot(region=region)
+    data = pytesseract.image_to_data(screenshot, output_type=pytesseract.Output.DICT)
+    words = [word.strip() for word in data["text"] if word.strip()]
+    log.info(f"Context menu OCR words: {_text_preview(' '.join(words))}")
+
+    for i, word in enumerate(data["text"]):
+        cleaned = word.strip().strip("[]").strip()
+        if cleaned.lower() == "monitor":
+            x = region[0] + data["left"][i] + data["width"][i] // 2
+            y = region[1] + data["top"][i] + data["height"][i] // 2
+            log.info(f"OCR found Monitor menu text at ({x}, {y})")
+            return (x, y)
     return None
 
 
@@ -285,6 +324,7 @@ class State:
     seen_ips: set = field(default_factory=set)   # already-processed, avoid re-triggering
     skipped_ips: set = field(default_factory=set)  # permanently skipped after success
     pending_ips: list = field(default_factory=list)
+    last_right_click: tuple[int, int] | None = None
 
 
 state = State()
@@ -383,7 +423,9 @@ def find_and_right_click_ip(ip: str) -> tuple[bool, bool, str | None]:
     x = CONNECTION_LIST_REGION[0] + data["left"][raw_index] + data["width"][raw_index] // 2
     y = CONNECTION_LIST_REGION[1] + data["top"][raw_index] + data["height"][raw_index] // 2
     pyautogui.rightClick(x, y)
+    state.last_right_click = (x, y)
     log.info(f"Right-clicked row for {ip} at ({x}, {y})")
+    time.sleep(0.4)  # let the context menu appear
     return True, was_fuzzy, matched_ip
 
 
@@ -392,17 +434,29 @@ def find_and_right_click_ip(ip: str) -> tuple[bool, bool, str | None]:
 # ------------------------------------------------------------------
 
 def click_monitor_menu_item() -> bool:
-    log.info(f"Searching for Monitor menu image: {MONITOR_MENU_IMAGE}")
-    location = locate_image_center(
-        MONITOR_MENU_IMAGE,
-        MONITOR_MENU_MATCH_CONFIDENCE,
-        "'Monitor' menu item",
+    region = context_menu_region(state.last_right_click)
+    log.info(
+        f"Searching for Monitor menu image near right-click "
+        f"{state.last_right_click}, region={region}"
     )
+
+    # Prefer OCR for the exact word "Monitor" so we never hit Information.
+    location = find_monitor_menu_by_ocr(region)
+    if location is None:
+        log.info(f"OCR miss; falling back to image match: {MONITOR_MENU_IMAGE}")
+        location = locate_image_center(
+            MONITOR_MENU_IMAGE,
+            MONITOR_MENU_MATCH_CONFIDENCE,
+            "'Monitor' menu item",
+            region=region,
+        )
+
     if location is None:
         log.warning("Could not find 'Monitor' menu item on screen")
         return False
+
     pyautogui.click(location)
-    log.info("Clicked 'Monitor' menu item")
+    log.info(f"Clicked 'Monitor' menu item at {location}")
     time.sleep(1)  # let the dialog open
     return True
 
