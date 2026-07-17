@@ -71,7 +71,6 @@ import pygetwindow as gw
 import pytesseract
 from PIL import Image, ImageDraw
 import pystray
-from pywinauto import Desktop
 
 # If Tesseract-OCR isn't on your Windows PATH, point pytesseract at the
 # exe directly. Default install location shown below -- adjust if you
@@ -557,84 +556,114 @@ def _is_autosave_label(text: str) -> bool:
     return cleaned == "autosave" or cleaned == "[autosave]"
 
 
+def _load_uia():
+    """Load Windows UI Automation via comtypes (no pywinauto/win32ui)."""
+    import comtypes.client
+
+    try:
+        from comtypes.gen import UIAutomationClient as UIA
+    except (ImportError, OSError, AttributeError):
+        comtypes.client.GetModule("UIAutomationCore.dll")
+        from comtypes.gen import UIAutomationClient as UIA
+
+    uia = comtypes.client.CreateObject(
+        "{ff48dba4-60ef-4201-aa87-54103eef594e}",
+        interface=UIA.IUIAutomation,
+    )
+    return uia, UIA
+
+
+def _uia_element_name(element) -> str:
+    try:
+        return element.CurrentName or ""
+    except Exception:
+        return ""
+
+
+def _uia_element_center(element) -> tuple[int, int] | None:
+    try:
+        rect = element.CurrentBoundingRectangle
+        x = (int(rect.left) + int(rect.right)) // 2
+        y = (int(rect.top) + int(rect.bottom)) // 2
+        if x > 0 and y > 0:
+            return (x, y)
+    except Exception:
+        pass
+    return None
+
+
+def _uia_find_autosave_in_tree(uia, UIA, root_element, max_nodes: int = 2500):
+    """Breadth-first search for a control whose name looks like AutoSave."""
+    walker = uia.ControlViewWalker
+    queue = [root_element]
+    seen = 0
+
+    while queue and seen < max_nodes:
+        element = queue.pop(0)
+        seen += 1
+        name = _uia_element_name(element)
+        if name and (
+            _is_autosave_label(name)
+            or "autosave" in name.lower().replace(" ", "").replace("-", "")
+        ):
+            center = _uia_element_center(element)
+            if center is not None:
+                return center, name
+
+        try:
+            child = walker.GetFirstChildElement(element)
+            while child is not None:
+                queue.append(child)
+                child = walker.GetNextSiblingElement(child)
+        except Exception:
+            continue
+
+    return None, None
+
+
 def find_autosave_via_windows_api(monitor_title: str = "") -> tuple[int, int] | None:
     """
-    Try to locate AutoSave through UI Automation / Win32 control tree.
+    Locate AutoSave through Windows UI Automation (COM).
     Returns screen center (x, y) if a matching control is found.
     """
-    backends = ("uia", "win32")
-    for backend in backends:
-        try:
-            desktop = Desktop(backend=backend)
-            windows = desktop.windows()
-        except Exception as e:
-            log.warning(f"Windows API backend '{backend}' unavailable: {e}")
-            continue
+    try:
+        uia, UIA = _load_uia()
+    except Exception as e:
+        log.warning(f"Windows UI Automation unavailable: {e}")
+        return None
 
-        monitor_windows = []
-        for w in windows:
-            try:
-                title = w.window_text() or ""
-            except Exception:
-                continue
-            if "monitor" not in title.lower():
-                continue
-            if monitor_title and title != monitor_title:
-                # Prefer exact title match when known, but still collect others.
-                monitor_windows.append((1, w, title))
-            else:
-                monitor_windows.append((0, w, title))
+    try:
+        root = uia.GetRootElement()
+        walker = uia.ControlViewWalker
+        # Top-level windows only first
+        child = walker.GetFirstChildElement(root)
+        monitor_roots = []
+        while child is not None:
+            title = _uia_element_name(child)
+            if "monitor" in title.lower():
+                # Prefer exact title when known
+                priority = 0 if (monitor_title and title == monitor_title) else 1
+                monitor_roots.append((priority, child, title))
+            child = walker.GetNextSiblingElement(child)
 
-        monitor_windows.sort(key=lambda item: item[0])
-        if not monitor_windows:
-            log.info(f"Windows API ({backend}): no Monitor window found")
-            continue
+        monitor_roots.sort(key=lambda item: item[0])
+        if not monitor_roots:
+            log.info("Windows API (UIA): no Monitor window found")
+            return None
 
-        for _prio, win, title in monitor_windows:
-            log.info(f"Windows API ({backend}): scanning controls in '{title}'")
-            try:
-                # descendants() can be slow/large; limit depth via wrap_timeout
-                descendants = win.descendants()
-            except Exception as e:
-                log.warning(f"Windows API ({backend}): could not enumerate controls: {e}")
-                continue
-
-            for ctrl in descendants:
-                try:
-                    texts = []
-                    for getter in (
-                        lambda c: c.window_text(),
-                        lambda c: c.element_info.name,
-                        lambda c: getattr(c.element_info, "rich_text", "") or "",
-                    ):
-                        try:
-                            value = getter(ctrl) or ""
-                        except Exception:
-                            value = ""
-                        if value:
-                            texts.append(value)
-
-                    if not any(_is_autosave_label(t) for t in texts):
-                        # Also accept labels that merely contain AutoSave
-                        joined = " ".join(texts).lower()
-                        if "autosave" not in joined.replace(" ", "").replace("-", ""):
-                            continue
-
-                    rect = ctrl.rectangle()
-                    x = (rect.left + rect.right) // 2
-                    y = (rect.top + rect.bottom) // 2
-                    if x <= 0 or y <= 0:
-                        continue
-
-                    log.info(
-                        f"Windows API ({backend}): found AutoSave control "
-                        f"texts={texts!r} at ({x}, {y})"
-                    )
-                    return (x, y)
-                except Exception:
-                    continue
-
-            log.info(f"Windows API ({backend}): AutoSave control not exposed in '{title}'")
+        for _prio, win_element, title in monitor_roots:
+            log.info(f"Windows API (UIA): scanning controls in '{title}'")
+            center, matched_name = _uia_find_autosave_in_tree(uia, UIA, win_element)
+            if center is not None:
+                log.info(
+                    f"Windows API (UIA): found AutoSave control "
+                    f"name={matched_name!r} at {center}"
+                )
+                return center
+            log.info(f"Windows API (UIA): AutoSave control not exposed in '{title}'")
+    except Exception:
+        log.exception("Windows API (UIA) scan failed")
+        return None
 
     return None
 

@@ -3,14 +3,19 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('assets', 'assets')]
 binaries = []
-hiddenimports = ['cv2', 'pystray._win32', 'comtypes', 'pywinauto']
+hiddenimports = [
+    'cv2',
+    'pystray._win32',
+    'comtypes',
+    'comtypes.stream',
+    'comtypes.gen',
+    'comtypes.gen.UIAutomationClient',
+]
 tmp_ret = collect_all('pyautogui')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pygetwindow')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pystray')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('pywinauto')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('comtypes')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
@@ -25,7 +30,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['pywinauto'],
     noarchive=False,
     optimize=0,
 )
