@@ -596,7 +596,7 @@ def find_autosave_by_ocr(region) -> tuple[int, int] | None:
 
 
 def click_autosave_button() -> bool:
-    """Click AutoSave by OCR inside the Monitor dialog bounds."""
+    """Click AutoSave by OCR inside the Monitor dialog bottom status bar."""
     win = get_monitor_window()
     if win is None:
         log.warning("No Monitor window found for Autosave OCR")
@@ -606,15 +606,17 @@ def click_autosave_button() -> bool:
     top = max(0, win.top)
     width = max(1, win.width)
     height = max(1, win.height)
-    # AutoSave is typically in the top toolbar — OCR the upper portion first
-    # for speed/accuracy, then fall back to the full window.
-    top_region = (left, top, width, max(80, height // 4))
+
+    # AutoSave lives on the bottom status bar — OCR the lower strip first.
+    bar_height = max(60, min(140, height // 5))
+    bottom_top = top + height - bar_height
+    bottom_region = (left, bottom_top, width, bar_height)
     full_region = (left, top, width, height)
 
-    log.info(f"Searching for AutoSave via OCR in Monitor top region: {top_region}")
-    location = find_autosave_by_ocr(top_region)
+    log.info(f"Searching for AutoSave via OCR in Monitor bottom bar: {bottom_region}")
+    location = find_autosave_by_ocr(bottom_region)
     if location is None:
-        log.info(f"AutoSave not in top region; OCR full Monitor window: {full_region}")
+        log.info(f"AutoSave not in bottom bar; OCR full Monitor window: {full_region}")
         location = find_autosave_by_ocr(full_region)
 
     if location is None:
