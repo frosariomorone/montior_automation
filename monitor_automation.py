@@ -71,6 +71,7 @@ import pygetwindow as gw
 import pytesseract
 from PIL import Image, ImageDraw
 import pystray
+from pywinauto import Desktop
 
 # If Tesseract-OCR isn't on your Windows PATH, point pytesseract at the
 # exe directly. Default install location shown below -- adjust if you
@@ -544,11 +545,98 @@ def resize_monitor_dialog() -> bool:
 
 
 # ------------------------------------------------------------------
-# STEP 8: click Autosave (OCR inside Monitor window)
+# STEP 8: click Autosave (Windows UI Automation, then OCR fallback)
 # ------------------------------------------------------------------
 
 def _normalize_ocr_token(word: str) -> str:
     return word.strip().strip("[](){}").strip().lower()
+
+
+def _is_autosave_label(text: str) -> bool:
+    cleaned = _normalize_ocr_token(text or "").replace("-", "").replace("_", "").replace(" ", "")
+    return cleaned == "autosave" or cleaned == "[autosave]"
+
+
+def find_autosave_via_windows_api(monitor_title: str = "") -> tuple[int, int] | None:
+    """
+    Try to locate AutoSave through UI Automation / Win32 control tree.
+    Returns screen center (x, y) if a matching control is found.
+    """
+    backends = ("uia", "win32")
+    for backend in backends:
+        try:
+            desktop = Desktop(backend=backend)
+            windows = desktop.windows()
+        except Exception as e:
+            log.warning(f"Windows API backend '{backend}' unavailable: {e}")
+            continue
+
+        monitor_windows = []
+        for w in windows:
+            try:
+                title = w.window_text() or ""
+            except Exception:
+                continue
+            if "monitor" not in title.lower():
+                continue
+            if monitor_title and title != monitor_title:
+                # Prefer exact title match when known, but still collect others.
+                monitor_windows.append((1, w, title))
+            else:
+                monitor_windows.append((0, w, title))
+
+        monitor_windows.sort(key=lambda item: item[0])
+        if not monitor_windows:
+            log.info(f"Windows API ({backend}): no Monitor window found")
+            continue
+
+        for _prio, win, title in monitor_windows:
+            log.info(f"Windows API ({backend}): scanning controls in '{title}'")
+            try:
+                # descendants() can be slow/large; limit depth via wrap_timeout
+                descendants = win.descendants()
+            except Exception as e:
+                log.warning(f"Windows API ({backend}): could not enumerate controls: {e}")
+                continue
+
+            for ctrl in descendants:
+                try:
+                    texts = []
+                    for getter in (
+                        lambda c: c.window_text(),
+                        lambda c: c.element_info.name,
+                        lambda c: getattr(c.element_info, "rich_text", "") or "",
+                    ):
+                        try:
+                            value = getter(ctrl) or ""
+                        except Exception:
+                            value = ""
+                        if value:
+                            texts.append(value)
+
+                    if not any(_is_autosave_label(t) for t in texts):
+                        # Also accept labels that merely contain AutoSave
+                        joined = " ".join(texts).lower()
+                        if "autosave" not in joined.replace(" ", "").replace("-", ""):
+                            continue
+
+                    rect = ctrl.rectangle()
+                    x = (rect.left + rect.right) // 2
+                    y = (rect.top + rect.bottom) // 2
+                    if x <= 0 or y <= 0:
+                        continue
+
+                    log.info(
+                        f"Windows API ({backend}): found AutoSave control "
+                        f"texts={texts!r} at ({x}, {y})"
+                    )
+                    return (x, y)
+                except Exception:
+                    continue
+
+            log.info(f"Windows API ({backend}): AutoSave control not exposed in '{title}'")
+
+    return None
 
 
 def find_autosave_by_ocr(region) -> tuple[int, int] | None:
@@ -596,10 +684,22 @@ def find_autosave_by_ocr(region) -> tuple[int, int] | None:
 
 
 def click_autosave_button() -> bool:
-    """Click AutoSave by OCR inside the Monitor dialog bottom status bar."""
+    """
+    Click AutoSave using Windows UI Automation first; if the control is not
+    exposed (custom-drawn status bar), fall back to OCR in the bottom bar.
+    """
     win = get_monitor_window()
+    monitor_title = win.title if win is not None else ""
+
+    log.info("Trying Windows API / UI Automation for AutoSave")
+    api_location = find_autosave_via_windows_api(monitor_title)
+    if api_location is not None:
+        pyautogui.click(api_location)
+        log.info(f"Clicked AutoSave via Windows API at {api_location}")
+        return True
+
     if win is None:
-        log.warning("No Monitor window found for Autosave OCR")
+        log.warning("No Monitor window found for Autosave OCR fallback")
         return False
 
     left = max(0, win.left)
@@ -613,18 +713,21 @@ def click_autosave_button() -> bool:
     bottom_region = (left, bottom_top, width, bar_height)
     full_region = (left, top, width, height)
 
-    log.info(f"Searching for AutoSave via OCR in Monitor bottom bar: {bottom_region}")
+    log.info(
+        "Windows API did not expose AutoSave; "
+        f"OCR fallback in Monitor bottom bar: {bottom_region}"
+    )
     location = find_autosave_by_ocr(bottom_region)
     if location is None:
         log.info(f"AutoSave not in bottom bar; OCR full Monitor window: {full_region}")
         location = find_autosave_by_ocr(full_region)
 
     if location is None:
-        log.warning("Could not find AutoSave text in Monitor window")
+        log.warning("Could not find AutoSave via Windows API or OCR")
         return False
 
     pyautogui.click(location)
-    log.info(f"Clicked AutoSave at {location}")
+    log.info(f"Clicked AutoSave via OCR at {location}")
     return True
 
 
