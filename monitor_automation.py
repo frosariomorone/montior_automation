@@ -127,7 +127,7 @@ RESIZE_FACTOR = 1.8  # Monitor dialog target = current size * this factor
 
 SIZE_TOLERANCE_PX = 10  # if within this many px of target, skip resizing
 POLL_INTERVAL_SECS = 8          # step 12 "waiting" before re-checking log
-EXPLORER_CLOSE_WAIT_SECS = 5    # step 9 sleep after killing the new explorer window
+EXPLORER_CLOSE_WAIT_SECS = 8    # wait after Autosave before closing Explorer
 
 # Log line format example: "9:48:14 PM      192.168.1.23   Connected"
 # Allow OCR junk (quotes, pipes, etc.) between the time and the IP.
@@ -625,31 +625,37 @@ def click_autosave_button() -> bool:
 
     pyautogui.click(location)
     log.info(f"Clicked AutoSave at {location}")
-    time.sleep(0.5)
     return True
 
 
 # ------------------------------------------------------------------
-# STEP 9: close the newly-opened Explorer window, wait
+# STEP 9: wait after Autosave, then close the new Explorer window
 # ------------------------------------------------------------------
 
 def close_new_explorer_window():
     """
-    Close only the newly-spawned File Explorer *window*
-    (not the explorer.exe shell process).
+    Wait EXPLORER_CLOSE_WAIT_SECS after Autosave, then close only the
+    newly-spawned File Explorer *window* (not explorer.exe itself).
     """
-    time.sleep(1.5)  # give the window time to actually appear
-    explorer_windows = [w for w in gw.getAllWindows() if "File Explorer" in w.title]
+    log.info(
+        f"Waiting {EXPLORER_CLOSE_WAIT_SECS}s after Autosave before closing Explorer"
+    )
+    time.sleep(EXPLORER_CLOSE_WAIT_SECS)
+
+    explorer_windows = [
+        w for w in gw.getAllWindows()
+        if w.title and "File Explorer" in w.title
+    ]
     if not explorer_windows:
         log.info("No new File Explorer window found to close")
+        return
+
     for w in explorer_windows:
         try:
             w.close()
             log.info(f"Closed Explorer window: {w.title}")
         except Exception as e:
             log.warning(f"Could not close window '{w.title}': {e}")
-
-    time.sleep(EXPLORER_CLOSE_WAIT_SECS)
 
 
 # ------------------------------------------------------------------
